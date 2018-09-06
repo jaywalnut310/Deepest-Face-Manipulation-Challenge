@@ -66,7 +66,7 @@ CelebA-HQ의 경우는 https://github.com/tkarras/progressive_growing_of_gans �
 ## 3. Tools
 간단한 VAE 모델과 이미지 조작에 관련한 코드 및 데이터 셋을 제공합니다.
 
-#### 베이스라인 kit: https://bitbucket.org/jaywalnut310/deepest-face-manipulation-challenge 
+#### 베이스라인 kit: https://github.com/jaywalnut310/Deepest-Face-Manipulation-Challenge
 - forked from https://github.com/bhpfelix/Variational-Autoencoder-PyTorch 
 
 #### 필요한 데이터: https://drive.google.com/drive/folders/1z0d5dIl23iitXfA9_8HNpw_-x0q7PfH4?usp=sharing
