@@ -10,9 +10,9 @@ from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import time
 from glob import glob
-from util import *
 import numpy as np
 from PIL import Image
+import pickle
 
 parser = argparse.ArgumentParser(description='PyTorch VAE')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
@@ -39,10 +39,11 @@ test_loader = range(40)
 
 totensor = transforms.ToTensor()
 def load_batch(batch_idx, istrain):
-    if istrain:
-        template = '../data/train/%s.jpg'
-    else:
-        template = '../data/test/%s.jpg'
+    if template is None:
+      if istrain:
+          template = '../data/train/%s.jpg'
+      else:
+          template = '../data/test/%s.jpg'
     l = [str(batch_idx*128 + i).zfill(6) for i in range(128)]
     data = []
     for idx in l:
@@ -200,7 +201,7 @@ def test(epoch):
     test_loss = 0
     for batch_idx in test_loader:
         data = load_batch(batch_idx, False)
-        data = Variable(data, volatile=True)
+        data = Variable(data)
         if args.cuda:
             data = data.cuda()
         recon_batch, mu, logvar = model(data)
@@ -220,7 +221,7 @@ def perform_latent_space_arithmatics(items): # input is list of tuples of 3 [(a1
     data = [im for item in items for im in item]
     data = [totensor(i) for i in data]
     data = torch.stack(data, dim=0)
-    data = Variable(data, volatile=True)
+    data = Variable(data)
     if args.cuda:
         data = data.cuda()
     z = model.get_latent_var(data.view(-1, model.nc, model.ndf, model.ngf))
@@ -249,7 +250,7 @@ def latent_space_transition(items): # input is list of tuples of  (a,b)
     data = [im for item in items for im in item[:-1]]
     data = [totensor(i) for i in data]
     data = torch.stack(data, dim=0)
-    data = Variable(data, volatile=True)
+    data = Variable(data)
     if args.cuda:
         data = data.cuda()
     z = model.get_latent_var(data.view(-1, model.nc, model.ndf, model.ngf))
@@ -276,11 +277,162 @@ def rand_faces(num=5):
     load_last_model()
     model.eval()
     z = torch.randn(num*num, model.latent_variable_size)
-    z = Variable(z, volatile=True)
+    z = Variable(z)
     if args.cuda:
         z = z.cuda()
     recon = model.decode(z)
     torchvision.utils.save_image(recon.data, '../imgs/rand_faces.jpg', nrow=num, padding=2)
+
+
+def load_hq(is_train=True):
+  if is_train:
+    file_name = '../data/hq_train.pkl'
+  else:
+    file_name = '../data/hq_validation.pkl'
+
+  with open(file_name, 'rb') as f:
+    hq = pickle.load(f)
+  attrs = np.array(hq['attr'])
+  attrs = (attrs + 1) / 2
+  imgs = np.array(hq['img'])
+
+  batch_size = args.batch_size
+  batch_num = int(np.ceil(len(imgs) / batch_size))
+
+  return imgs, attrs, batch_size, batch_num
+
+def save_attributes():
+  # data
+  imgs, attrs, batch_size, batch_num = load_hq()
+
+  # model
+  load_last_model()
+  model.eval()
+
+  # prepare
+  latent_size = model.latent_variable_size
+  zo = np.zeros([40, latent_size])
+  zx = np.zeros([40, latent_size])
+  no = np.zeros([40])
+  nx = np.zeros([40])
+  
+  # get attrs
+  for i in range(batch_num):
+    data = imgs[i*batch_size:(i+1)*batch_size]
+    data = [totensor(i) for i in data]
+    data = torch.stack(data, dim=0)
+    data = Variable(data)
+    if args.cuda:
+      data = data.cuda()
+
+    m, _ = model.encode(data)
+    m = m.data.cpu().numpy()
+    n = attrs[i*batch_size:(i+1)*batch_size]
+
+    zo += (m.reshape([-1, 1, latent_size]) * n.reshape([-1, 40, 1])).sum(0)
+    zx += (m.reshape([-1, 1, latent_size]) * (1-n).reshape([-1, 40, 1])).sum(0)
+    no += n.sum(0)
+    nx += (1-n).sum(0)
+
+  m = zo / no.reshape([40, 1]) - zx / nx.reshape([40, 1])
+
+  with open('../data/hq_attr.pkl', 'wb') as f:
+    pickle.dump(m, f)
+
+def recon_hq():
+    # data
+    imgs, attrs, batch_size, batch_num = load_hq(False)
+
+    # model
+    load_last_model()
+    model.eval()
+    
+    # recon
+    for i in range(1):
+        data = imgs[i*batch_size:(i+1)*batch_size]
+        data = [totensor(i) for i in data]
+        data = torch.stack(data, dim=0)
+        data = Variable(data)
+        if args.cuda:
+            data = data.cuda()
+        recon_batch, mu, logvar = model(data)
+
+        torchvision.utils.save_image(data.data, '../imgs/hq_{}_data.jpg'.format(i), nrow=8, padding=2)
+        torchvision.utils.save_image(recon_batch.data, '../imgs/hq_{}_recon.jpg'.format(i), nrow=8, padding=2)
+
+def manipulate_attr(img_path, attr_id, min_scale=0., max_scale=1.):
+    """ Please run save_attributes() first! """
+
+    # data
+    with open('../data/hq_attr.pkl', 'rb') as f:
+      m = pickle.load(f) # [40, model.latent_variable_size]
+    attr = m[attr_id:attr_id+1]
+    data = [np.array(Image.open(img_path))]
+
+    # model
+    load_last_model()
+    model.eval()
+
+    # manipulate
+    data = [totensor(i) for i in data]
+    data = torch.stack(data, dim=0)
+    data = Variable(data)
+
+    attr = torch.FloatTensor(attr)
+    attr = Variable(attr)
+
+    if args.cuda:
+      data = data.cuda()
+      attr = attr.cuda()
+    #z = model.get_latent_var(data.view(-1, model.nc, model.ndf, model.ngf))
+    z, _ = model.encode(data)
+
+    zs = []
+    numsample = 10
+    for factor in np.linspace(min_scale,max_scale,numsample):
+      zs.append(z + float(factor)*attr)
+    z = torch.cat(zs, 0)
+    result = model.decode(z)
+
+    file_name = img_path.split('/')[-1].split('.')[0]
+    torchvision.utils.save_image(result.data, '../imgs/%s_trans.jpg' % file_name, nrow=10, padding=2)
+    for i in range(len(result.data)):
+      torchvision.utils.save_image(result.data[i], '../imgs/%s_trans_%d.jpg' % (file_name, i), nrow=1, padding=0)
+
+def interpolate_lr(img_path):
+    # data
+    img = np.array(Image.open(img_path))
+    img_f = np.fliplr(img).copy()
+    data = [img, img_f]
+
+    # model
+    load_last_model()
+    model.eval()
+
+    # manipulate
+    data = [totensor(i) for i in data]
+    data = torch.stack(data, dim=0)
+    data = Variable(data)
+
+    if args.cuda:
+      data = data.cuda()
+    #z = model.get_latent_var(data.view(-1, model.nc, model.ndf, model.ngf))
+    z, _ = model.encode(data)
+
+    zs = []
+    numsample = 10
+    z_diff = (z[1:2] - z[0:1])
+    z = z[0:1]
+    for factor in np.linspace(0.,1.,numsample):
+      zs.append(z + float(factor)*z_diff)
+    z = torch.cat(zs, 0)
+    result = model.decode(z)
+
+    file_name = img_path.split('/')[-1].split('.')[0]
+    torchvision.utils.save_image(result.data, '../imgs/%s_interp.jpg' % file_name, nrow=10, padding=2)
+    for i in range(len(result.data)):
+      torchvision.utils.save_image(result.data[i], '../imgs/%s_interp_%d.jpg' % (file_name, i), nrow=1, padding=0)
+
 
 def load_last_model():
     models = glob('../models/*.pth')
@@ -304,7 +456,15 @@ def last_model_to_cpu():
     torch.save(model.state_dict(), '../models/cpu_'+last_cp.split('/')[-1])
 
 if __name__ == '__main__':
-    resume_training()
+    """New"""
+    #recon_hq()
+    #save_attributes()
+    #manipulate_attr('../imgs/ybj.jpg.jpg', 31, 0, 5) # smiling
+    #manipulate_attr('../imgs/kjh.png.jpg', 15, -1, 2) # glasses
+    #interpolate_lr('../imgs/kjh.png.jpg')
+
+    """Old"""
+    # resume_training()
     # last_model_to_cpu()
     # load_last_model()
     # rand_faces(10)
